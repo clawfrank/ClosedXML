@@ -44,6 +44,7 @@ namespace ClosedXML.Excel
     public partial class XLWorkbook : IXLWorkbook
     {
         #region Static
+
         public static IXLStyle DefaultStyle
         {
             get
@@ -134,7 +135,7 @@ namespace ClosedXML.Excel
             RecalculationCounter++;
         }
 
-        #region  Nested Type : XLLoadSource
+        #region Nested Type : XLLoadSource
 
         private enum XLLoadSource
         {
@@ -143,7 +144,7 @@ namespace ClosedXML.Excel
             Stream
         };
 
-        #endregion Nested Type: XLLoadSource
+        #endregion Nested Type : XLLoadSource
 
         internal XLWorksheets WorksheetsInternal { get; private set; }
 
@@ -594,6 +595,18 @@ namespace ClosedXML.Excel
             output.Flush();
         }
 
+        public IXLTable Table(string tableName, StringComparison comparisonType = StringComparison.OrdinalIgnoreCase)
+        {
+            var table = this.Worksheets
+                .SelectMany(ws => ws.Tables)
+                .FirstOrDefault(t => t.Name.Equals(tableName, comparisonType));
+
+            if (table == null)
+                throw new ArgumentOutOfRangeException($"Table {tableName} was not found.");
+
+            return table;
+        }
+
         public IXLWorksheet Worksheet(String name)
         {
             return WorksheetsInternal.Worksheet(name);
@@ -611,10 +624,10 @@ namespace ClosedXML.Excel
 
         public IXLCells FindCells(Func<IXLCell, Boolean> predicate)
         {
-            var cells = new XLCells(false, false);
+            var cells = new XLCells(false, XLCellsUsedOptions.AllContents);
             foreach (XLWorksheet ws in WorksheetsInternal)
             {
-                foreach (XLCell cell in ws.CellsUsed(true))
+                foreach (XLCell cell in ws.CellsUsed(XLCellsUsedOptions.All))
                 {
                     if (predicate(cell))
                         cells.Add(cell);
@@ -801,7 +814,7 @@ namespace ClosedXML.Excel
 
         public void Dispose()
         {
-            Worksheets.ForEach(w => w.Dispose());
+            Worksheets.ForEach(w => (w as XLWorksheet).Cleanup());
         }
 
         public Boolean Use1904DateSystem { get; set; }

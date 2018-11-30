@@ -37,7 +37,9 @@ namespace ClosedXML_Tests.Excel
                 @"Misc\Date1904System.xlsx",
                 @"Misc\LoadImageWithoutTransform2D.xlsx",
                 @"Misc\PivotTableWithTableSource.xlsx",
-                @"Misc\TemplateWithTableSourcePivotTables.xlsx"
+                @"Misc\TemplateWithTableSourcePivotTables.xlsx",
+                @"Misc\PrintAreaRefersToExternalWorksheet.xlsx",
+                @"Misc\NamedRangeWithInvalidCharacter.xlsx"
             };
 
             foreach (var file in files)
@@ -405,6 +407,20 @@ namespace ClosedXML_Tests.Excel
                 var cellToCheck = wb.Worksheet(1).Cell("B2");
                 Assert.AreEqual(XLDataType.Text, cellToCheck.DataType);
                 Assert.AreEqual("String with String Data type", cellToCheck.Value);
+            }
+        }
+
+        [Test]
+        public void CanLoadFileWithInvalidSelectedRanges()
+        {
+            using (var stream = TestHelper.GetStreamFromResource(TestHelper.GetResourcePath(@"Other\SelectedRanges\InvalidSelectedRange.xlsx")))
+            using (var wb = new XLWorkbook(stream))
+            {
+                var ws = wb.Worksheet(1);
+
+                Assert.AreEqual(2, ws.SelectedRanges.Count);
+                Assert.AreEqual("B2:B2", ws.SelectedRanges.First().RangeAddress.ToString());
+                Assert.AreEqual("B2:C2", ws.SelectedRanges.Last().RangeAddress.ToString());
             }
         }
     }

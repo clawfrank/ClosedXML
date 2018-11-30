@@ -1,5 +1,6 @@
 ﻿using ClosedXML.Attributes;
 using ClosedXML.Excel;
+using ClosedXML.Excel.Exceptions;
 using NUnit.Framework;
 using System;
 using System.Collections.Generic;
@@ -108,6 +109,25 @@ namespace ClosedXML_Tests.Excel
                 IXLTable table = ws.RangeUsed().CreateTable();
                 table.InsertColumnsAfter(1);
                 Assert.AreEqual("Column2", table.HeadersRow().LastCell().GetString());
+            }
+        }
+
+        [Test]
+        public void DataRange_returns_null_if_empty()
+        {
+            using (var wb = new XLWorkbook())
+            {
+                IXLWorksheet ws = wb.AddWorksheet("Sheet1");
+                ws.FirstCell().SetValue("Categories")
+                    .CellBelow().SetValue("A")
+                    .CellBelow().SetValue("B")
+                    .CellBelow().SetValue("C");
+
+                IXLTable table = ws.RangeUsed().CreateTable();
+
+                ws.Rows("2:4").Delete();
+
+                Assert.IsNull(table.DataRange);
             }
         }
 
@@ -346,7 +366,7 @@ namespace ClosedXML_Tests.Excel
 
                 Assert.AreEqual("Categories", table.Fields.First().Name);
 
-                Assert.IsTrue(ws.Cell(1, 1).IsEmpty(true));
+                Assert.IsTrue(ws.Cell(1, 1).IsEmpty(XLCellsUsedOptions.All));
                 Assert.AreEqual(null, table.HeadersRow());
                 Assert.AreEqual("A", table.DataRange.FirstRow().Field("Categories").GetString());
                 Assert.AreEqual("C", table.DataRange.LastRow().Field("Categories").GetString());
@@ -437,6 +457,47 @@ namespace ClosedXML_Tests.Excel
 
                 Assert.AreEqual("UnOrderedColumn", table.Fields.Last().Name);
                 Assert.AreEqual(2, table.Fields.Last().Index);
+            }
+        }
+
+        [Test]
+        public void TestFieldCellTypes()
+        {
+            var l = new List<TestObjectWithAttributes>()
+            {
+                new TestObjectWithAttributes() { Column1 = "a", Column2 = "b", MyField = 4, UnOrderedColumn = 999 },
+                new TestObjectWithAttributes() { Column1 = "c", Column2 = "d", MyField = 5, UnOrderedColumn = 777 }
+            };
+
+            using (var wb = new XLWorkbook())
+            {
+                var ws = wb.AddWorksheet("Sheet1");
+                var table = ws.Cell("B2").InsertTable(l);
+
+                Assert.AreEqual(4, table.Fields.Count());
+
+                Assert.AreEqual("B2", table.Field(0).HeaderCell.Address.ToString());
+                Assert.AreEqual("C2", table.Field(1).HeaderCell.Address.ToString());
+                Assert.AreEqual("D2", table.Field(2).HeaderCell.Address.ToString());
+                Assert.AreEqual("E2", table.Field(3).HeaderCell.Address.ToString());
+
+                Assert.IsNull(table.Field(0).TotalsCell);
+                Assert.IsNull(table.Field(1).TotalsCell);
+                Assert.IsNull(table.Field(2).TotalsCell);
+                Assert.IsNull(table.Field(3).TotalsCell);
+
+                table.SetShowTotalsRow();
+
+                Assert.AreEqual("B5", table.Field(0).TotalsCell.Address.ToString());
+                Assert.AreEqual("C5", table.Field(1).TotalsCell.Address.ToString());
+                Assert.AreEqual("D5", table.Field(2).TotalsCell.Address.ToString());
+                Assert.AreEqual("E5", table.Field(3).TotalsCell.Address.ToString());
+
+                var field = table.Fields.Last();
+
+                Assert.AreEqual("E2:E5", field.Column.RangeAddress.ToString());
+                Assert.AreEqual("E3", field.DataCells.First().Address.ToString());
+                Assert.AreEqual("E4", field.DataCells.Last().Address.ToString());
             }
         }
 
@@ -607,6 +668,12 @@ namespace ClosedXML_Tests.Excel
 
                 table1.Name = "table1";
                 Assert.AreEqual("table1", table1.Name);
+
+                table1.Name = "_table1";
+                Assert.AreEqual("_table1", table1.Name);
+
+                table1.Name = "\\table1";
+                Assert.AreEqual("\\table1", table1.Name);
 
                 Assert.Throws<ArgumentException>(() => table1.Name = "");
                 Assert.Throws<ArgumentException>(() => table1.Name = "R");
@@ -811,7 +878,6 @@ namespace ClosedXML_Tests.Excel
                 ws.FirstCell().InsertTable(l);
                 Assert.Throws<ArgumentException>(() => ws.RangeUsed().CreateTable());
             }
-
         }
 
         [Test]
@@ -825,7 +891,6 @@ namespace ClosedXML_Tests.Excel
             TestDelegate action = () => table.CopyTo(ws1);
 
             Assert.Throws(typeof(InvalidOperationException), action);
-
         }
 
         [Test]
@@ -892,6 +957,53 @@ namespace ClosedXML_Tests.Excel
         }
 
         [Test]
+        public void NewTableHasNullRelId()
+        {
+            using (var ms = new MemoryStream())
+            {
+                using (var wb = new XLWorkbook())
+                {
+                    var ws = wb.Worksheets.Add("Sheet1");
+                    ws.Cell("A1").Value = "Custom column 1";
+                    ws.Cell("B1").Value = "Custom column 2";
+                    ws.Cell("C1").Value = "Custom column 3";
+                    ws.Cell("A2").Value = "Value 1";
+                    ws.Cell("B2").Value = 123.45;
+                    ws.Cell("C2").Value = new DateTime(2018, 5, 10);
+                    var original = ws.Range("A1:C2").CreateTable("Attached table");
+
+                    Assert.AreEqual(1, ws.Tables.Count());
+                    Assert.IsNull((original as XLTable).RelId);
+
+                    wb.SaveAs(ms);
+                }
+
+                using (var wb = new XLWorkbook(ms))
+                {
+                    var ws = wb.Worksheets.Add("Sheet2");
+                    var original = wb.Worksheets.First().Tables.First();
+
+                    Assert.IsNotNull((original as XLTable).RelId);
+
+                    var copy = original.CopyTo(ws);
+
+                    Assert.AreEqual(1, ws.Tables.Count());
+                    Assert.IsNull((copy as XLTable).RelId);
+
+                    AssertTablesAreEqual(original, copy);
+
+                    Assert.AreEqual("Sheet2!A1:C2", copy.RangeAddress.ToString(XLReferenceStyle.A1, true));
+                    Assert.AreEqual("Custom column 1", ws.Cell("A1").Value);
+                    Assert.AreEqual("Custom column 2", ws.Cell("B1").Value);
+                    Assert.AreEqual("Custom column 3", ws.Cell("C1").Value);
+                    Assert.AreEqual("Value 1", ws.Cell("A2").Value);
+                    Assert.AreEqual(123.45, (double)ws.Cell("B2").Value, XLHelper.Epsilon);
+                    Assert.AreEqual(new DateTime(2018, 5, 10), ws.Cell("C2").Value);
+                }
+            }
+        }
+
+        [Test]
         public void CopyTableWithoutData()
         {
             var wb = new XLWorkbook();
@@ -917,6 +1029,70 @@ namespace ClosedXML_Tests.Excel
             Assert.AreEqual("", ws2.Cell("A2").Value);
             Assert.AreEqual("", ws2.Cell("B2").Value);
             Assert.AreEqual("", ws2.Cell("C2").Value);
+        }
+
+        [Test]
+        public void SavingTableWithNullDataRangeThrowsException()
+        {
+            using (var ms = new MemoryStream())
+            using (var wb = new XLWorkbook())
+            {
+                var ws = wb.AddWorksheet("Sheet1");
+
+                var data = Enumerable.Range(1, 10)
+                    .Select(i => new
+                    {
+                        Number = i,
+                        NumberString = String.Concat("Number", i.ToString())
+                    });
+
+                var table = ws.FirstCell()
+                    .InsertTable(data)
+                    .SetShowTotalsRow();
+
+                table.Fields.Last().TotalsRowFunction = XLTotalsRowFunction.Count;
+
+                table.DataRange.Rows()
+                    .OrderByDescending(r => r.RowNumber())
+                    .ToList()
+                    .ForEach(r => r.WorksheetRow().Delete());
+
+                Assert.IsNull(table.DataRange);
+                Assert.Throws<EmptyTableException>(() => wb.SaveAs(ms));
+            }
+        }
+
+        [Test]
+        public void CanCreateTableWithWhiteSpaceColumnHeaders()
+        {
+            using (var wb = new XLWorkbook())
+            {
+                var ws = wb.AddWorksheet("Sheet1");
+
+                ws.Cell("A1").SetValue("Header");
+                ws.Cell("B1").SetValue(new string(' ', 1));
+                ws.Cell("C1").SetValue(new string(' ', 2));
+                ws.Cell("D1").SetValue(new string(' ', 3));
+
+                var table = ws.Range("A1:E3").CreateTable("Table1");
+
+                Assert.AreEqual("Header", table.Field(0).Name);
+                Assert.AreEqual(new string(' ', 1), table.Field(1).Name);
+                Assert.AreEqual(new string(' ', 2), table.Field(2).Name);
+                Assert.AreEqual(new string(' ', 3), table.Field(3).Name);
+                Assert.AreEqual("Column5", table.Field(4).Name);
+            }
+        }
+
+        [Test]
+        public void TableNotFound()
+        {
+            using (var wb = new XLWorkbook())
+            {
+                var ws = wb.AddWorksheet("Sheet1");
+                Assert.Throws<ArgumentOutOfRangeException>(() => ws.Table("dummy"));
+                Assert.Throws<ArgumentOutOfRangeException>(() => wb.Table("dummy"));
+            }
         }
 
         private void AssertTablesAreEqual(IXLTable table1, IXLTable table2)

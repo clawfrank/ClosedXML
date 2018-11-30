@@ -35,6 +35,26 @@ namespace ClosedXML_Tests
         }
 
         [Test]
+        public void CopyColumnVisibility()
+        {
+            var wb = new XLWorkbook();
+            var ws = wb.AddWorksheet("Sheet1");
+            ws.Columns(10, 20).Hide();
+            ws.CopyTo("Sheet2");
+            Assert.IsTrue(wb.Worksheet("Sheet2").Column(10).IsHidden);
+        }
+
+        [Test]
+        public void CopyRowVisibility()
+        {
+            var wb = new XLWorkbook();
+            var ws = wb.AddWorksheet("Sheet1");
+            ws.Rows(2, 5).Hide();
+            ws.CopyTo("Sheet2");
+            Assert.IsTrue(wb.Worksheet("Sheet2").Row(4).IsHidden);
+        }
+
+        [Test]
         public void DeletingSheets1()
         {
             var wb = new XLWorkbook();
@@ -828,6 +848,40 @@ namespace ClosedXML_Tests
                 ws2.Delete();
 
                 Assert.AreEqual("#REF!A1:B2", range.RangeAddress.ToString());
+            }
+        }
+
+        [Test]
+        public void InvalidRowAndColumnIndices()
+        {
+            using (var wb = new XLWorkbook())
+            {
+                var ws = wb.AddWorksheet("Sheet1");
+                Assert.Throws<ArgumentOutOfRangeException>(() => ws.Row(-1));
+                Assert.Throws<ArgumentOutOfRangeException>(() => ws.Row(XLHelper.MaxRowNumber + 1));
+
+                Assert.Throws<ArgumentOutOfRangeException>(() => ws.Column(-1));
+                Assert.Throws<ArgumentOutOfRangeException>(() => ws.Column(XLHelper.MaxColumnNumber + 1));
+            }
+        }
+
+        [Test]
+        public void InvalidSelectedRangeExcluded()
+        {
+            using (var wb = new XLWorkbook())
+            {
+                var ws = wb.AddWorksheet("Sheet1");
+                var range1 = ws.Range("B2:C2");
+                var range2 = ws.Range("B4:C4");
+                ws.SelectedRanges.Clear();
+
+                ws.SelectedRanges.Add(range1);
+                ws.SelectedRanges.Add(range2);
+
+                ws.Row(4).Delete();
+
+                Assert.IsFalse(range2.RangeAddress.IsValid);
+                Assert.AreEqual(range1, ws.SelectedRanges.Single());
             }
         }
     }

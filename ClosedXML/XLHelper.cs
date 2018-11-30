@@ -19,10 +19,12 @@ namespace ClosedXML.Excel
         public const String MaxColumnLetter = "XFD";
         public const Double Epsilon = 1e-10;
 
-        private const Int32 TwoT26 = 26 * 26;
+        public static String LastCell { get { return $"{MaxColumnLetter}{MaxRowNumber}"; } }
 
-        internal static readonly Graphics Graphic = Graphics.FromImage(new Bitmap(200, 200));
-        internal static readonly Double DpiX = Graphic.DpiX;
+        private static readonly Lazy<Graphics> graphics = new Lazy<Graphics>(() => Graphics.FromImage(new Bitmap(200, 200)));
+        internal static Graphics Graphics { get => graphics.Value; }
+        internal static Double DpiX { get => Graphics.DpiX; }
+
         internal static readonly NumberStyles NumberStyle = NumberStyles.AllowDecimalPoint | NumberStyles.AllowLeadingSign | NumberStyles.AllowLeadingWhite | NumberStyles.AllowTrailingWhite | NumberStyles.AllowExponent;
         internal static readonly CultureInfo ParseCulture = CultureInfo.InvariantCulture;
 
@@ -71,7 +73,7 @@ namespace ClosedXML.Excel
                 else if (i < 26 * 27)
                     letter = letters[i / 26 - 1] + letters[i % 26];
                 else
-                    letter = letters[i / 26 / 26 - 1] + letters[(i / 26 - 1) % 26] + letters[i % 26];
+                    letter = letters[(i - 26) / 26 / 26 - 1] + letters[(i / 26 - 1) % 26] + letters[i % 26];
                 allLetters[i] = letter;
                 letterIndexes.Add(letter, i + 1);
             }
@@ -333,9 +335,10 @@ namespace ClosedXML.Excel
                 return false;
             }
 
-            if (newName[0] != '_' && !char.IsLetter(newName[0]))
+            var allowedFirstCharacters = new[] { '_', '\\' };
+            if (!allowedFirstCharacters.Contains(newName[0]) && !char.IsLetter(newName[0]))
             {
-                message = $"The {objectType} name '{newName}' does not begin with a letter or an underscore";
+                message = $"The {objectType} name '{newName}' does not begin with a letter, an underscore or a backslash.";
                 return false;
             }
 

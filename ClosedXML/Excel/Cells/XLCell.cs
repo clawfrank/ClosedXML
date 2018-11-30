@@ -223,21 +223,9 @@ namespace ClosedXML.Excel
 
             // For SetValue<T> we set the cell value directly to the parameter
             // as opposed to the other SetValue(object value) where we parse the string and try to decude the value
-            if (value is String || value is char)
-            {
-                parsedValue = value.ToInvariantString();
-                _dataType = XLDataType.Text;
-                if (parsedValue.Contains(Environment.NewLine) && !style.Alignment.WrapText)
-                    Style.Alignment.WrapText = true;
-
-                parsed = true;
-            }
-            else
-            {
-                var tuple = SetKnownTypedValue(value, style);
-                parsedValue = tuple.Item1;
-                parsed = tuple.Item2;
-            }
+            var tuple = SetKnownTypedValue(value, style, acceptString: true);
+            parsedValue = tuple.Item1;
+            parsed = tuple.Item2;
 
             // If parsing was unsuccessful, we throw an ArgumentException
             // because we are using SetValue<T> (typed).
@@ -253,11 +241,20 @@ namespace ClosedXML.Excel
         }
 
         // TODO: Replace with (string, bool) ValueTuple later
-        private Tuple<string, bool> SetKnownTypedValue<T>(T value, XLStyleValue style)
+        private Tuple<string, bool> SetKnownTypedValue<T>(T value, XLStyleValue style, Boolean acceptString)
         {
             string parsedValue;
             bool parsed;
-            if (value is DateTime d && d >= BaseDate)
+            if (value is String && acceptString || value is char || value is Guid || value is Enum)
+            {
+                parsedValue = value.ToInvariantString();
+                _dataType = XLDataType.Text;
+                if (parsedValue.Contains(Environment.NewLine) && !style.Alignment.WrapText)
+                    Style.Alignment.WrapText = true;
+
+                parsed = true;
+            }
+            else if (value is DateTime d && d >= BaseDate)
             {
                 parsedValue = d.ToOADate().ToInvariantString();
                 parsed = true;
@@ -284,7 +281,7 @@ namespace ClosedXML.Excel
                 {
                     parsedValue = value.ToString();
                     _dataType = XLDataType.Text;
-                    parsed = parsedValue.Length == 0;
+                    parsed = parsedValue.Length != 0;
                 }
                 else
                 {
@@ -295,10 +292,8 @@ namespace ClosedXML.Excel
             }
             else
             {
-                // Here we specifically don't use invariant string, as we want to use the current culture to convert to string
-                parsedValue = value.ToString();
-                _dataType = XLDataType.Text;
-                parsed = parsedValue.Length == 0;
+                parsed = false;
+                parsedValue = null;
             }
 
             return new Tuple<string, bool>(parsedValue, parsed);
@@ -306,13 +301,23 @@ namespace ClosedXML.Excel
 
         private string DeduceCellValueByParsing(string value, XLStyleValue style)
         {
-            if (value[0] == '\'')
+            if (String.IsNullOrEmpty(value))
             {
+                _dataType = XLDataType.Text;
+            }
+            else if (value[0] == '\'')
+            {
+                // If a user sets a cell value to a value starting with a single quote
+                // ensure the data type is text
+                // and that it will be prefixed with a quote in Excel too
+
                 value = value.Substring(1, value.Length - 1);
 
                 _dataType = XLDataType.Text;
                 if (value.Contains(Environment.NewLine) && !style.Alignment.WrapText)
                     Style.Alignment.WrapText = true;
+
+                this.Style.SetIncludeQuotePrefix();
             }
             else if (value.Trim() != "NaN" && Double.TryParse(value, XLHelper.NumberStyle, XLHelper.ParseCulture, out Double _))
                 _dataType = XLDataType.Number;
@@ -435,7 +440,7 @@ namespace ClosedXML.Excel
                 )
             {
                 var referenceCell = Worksheet.Workbook.Worksheet(sName).Cell(cAddress);
-                if (referenceCell.IsEmpty(false))
+                if (referenceCell.IsEmpty(XLCellsUsedOptions.AllContents))
                     return 0;
                 else
                     return referenceCell.Value;
@@ -453,7 +458,7 @@ namespace ClosedXML.Excel
                     && XLHelper.IsValidA1Address(cAddress))
                 {
                     var referenceCell = Worksheet.Workbook.Worksheet(sName).Cell(cAddress);
-                    if (referenceCell.IsEmpty(false))
+                    if (referenceCell.IsEmpty(XLCellsUsedOptions.AllContents))
                         return 0;
                     else
                         return referenceCell.Value;
@@ -1420,22 +1425,25 @@ namespace ClosedXML.Excel
 
         public Boolean IsEmpty()
         {
-            return IsEmpty(false);
+            return IsEmpty(XLCellsUsedOptions.AllContents);
         }
 
+        [Obsolete("Use the overload with XLCellsUsedOptions")]
         public Boolean IsEmpty(Boolean includeFormats)
         {
-            return IsEmpty(includeFormats, includeFormats);
+            return IsEmpty(includeFormats
+                ? XLCellsUsedOptions.All
+                : XLCellsUsedOptions.AllContents);
         }
 
-        public Boolean IsEmpty(Boolean includeNormalFormats, Boolean includeConditionalFormats)
-        {
+        public Boolean IsEmpty(XLCellsUsedOptions options)
+        { 
             if (InnerText.Length > 0)
                 return false;
 
-            if (includeNormalFormats)
+            if (options.HasFlag(XLCellsUsedOptions.NormalFormats))
             {
-                if (!StyleValue.Equals(Worksheet.StyleValue) || IsMerged() || HasComment || HasDataValidation)
+                if (!StyleValue.Equals(Worksheet.StyleValue))
                     return false;
 
                 if (StyleValue.Equals(Worksheet.StyleValue))
@@ -1448,7 +1456,16 @@ namespace ClosedXML.Excel
                 }
             }
 
-            if (includeConditionalFormats
+            if (options.HasFlag(XLCellsUsedOptions.MergedRanges) && IsMerged())
+                return false;
+
+            if (options.HasFlag(XLCellsUsedOptions.Comments) && HasComment)
+                return false;
+
+            if (options.HasFlag(XLCellsUsedOptions.DataValidation) && HasDataValidation)
+                return false;
+
+            if (options.HasFlag(XLCellsUsedOptions.ConditionalFormats)
                 && Worksheet.ConditionalFormats.SelectMany(cf => cf.Ranges).Any(range => range.Contains(this)))
                 return false;
 
@@ -1568,10 +1585,10 @@ namespace ClosedXML.Excel
 
         public Boolean TryGetValue<T>(out T value)
         {
-            Object currValue;
+            Object currentValue;
             try
             {
-                currValue = Value;
+                currentValue = Value;
             }
             catch
             {
@@ -1579,84 +1596,106 @@ namespace ClosedXML.Excel
                 value = default;
                 return false;
             }
-            
 
-            if (currValue == null)
+            if (currentValue == null)
             {
                 value = default;
                 return true;
             }
 
-            if (TryGetTimeSpanValue(out value, currValue, out Boolean b)) return b;
+            if (typeof(T) != typeof(String) // Strings are handled later and have some specifics to UTF handling
+                && currentValue is T t)
+            {
+                value = t;
+                return true;
+            }
+
+            if (TryGetDateTimeValue(out value, currentValue)) return true;
+
+            if (TryGetTimeSpanValue(out value, currentValue)) return true;
+
+            if (TryGetBooleanValue(out value, currentValue)) return true;
 
             if (TryGetRichStringValue(out value)) return true;
 
-            if (TryGetStringValue(out value, currValue)) return true;
+            if (TryGetStringValue(out value, currentValue)) return true;
 
-            var strValue = currValue.ToString();
-            if (typeof(T) == typeof(bool)) return TryGetBasicValue<T, bool>(out value, strValue, bool.TryParse);
-            if (typeof(T) == typeof(sbyte)) return TryGetBasicValue<T, sbyte>(out value, strValue, sbyte.TryParse);
-            if (typeof(T) == typeof(byte)) return TryGetBasicValue<T, byte>(out value, strValue, byte.TryParse);
-            if (typeof(T) == typeof(short)) return TryGetBasicValue<T, short>(out value, strValue, short.TryParse);
-            if (typeof(T) == typeof(ushort)) return TryGetBasicValue<T, ushort>(out value, strValue, ushort.TryParse);
-            if (typeof(T) == typeof(int)) return TryGetBasicValue<T, int>(out value, strValue, int.TryParse);
-            if (typeof(T) == typeof(uint)) return TryGetBasicValue<T, uint>(out value, strValue, uint.TryParse);
-            if (typeof(T) == typeof(long)) return TryGetBasicValue<T, long>(out value, strValue, long.TryParse);
-            if (typeof(T) == typeof(ulong)) return TryGetBasicValue<T, ulong>(out value, strValue, ulong.TryParse);
-            if (typeof(T) == typeof(float)) return TryGetBasicValue<T, float>(out value, strValue, float.TryParse);
-            if (typeof(T) == typeof(double)) return TryGetBasicValue<T, double>(out value, strValue, double.TryParse);
-            if (typeof(T) == typeof(decimal)) return TryGetBasicValue<T, decimal>(out value, strValue, decimal.TryParse);
+            if (TryGetHyperlink(out value)) return true;
 
-            if (typeof(T) == typeof(XLHyperlink))
+            if (currentValue.IsNumber())
             {
-                XLHyperlink tmp = GetHyperlink();
-                if (tmp != null)
+                try
                 {
-                    value = (T)Convert.ChangeType(tmp, typeof(T));
+                    value = (T)Convert.ChangeType(currentValue, typeof(T));
                     return true;
                 }
-
-                value = default(T);
-                return false;
+                catch (Exception)
+                {
+                    value = default;
+                    return false;
+                }
             }
+
+            var strValue = currentValue.ToString();
+
+            if (typeof(T) == typeof(sbyte)) return TryGetBasicValue<T, sbyte>(strValue, sbyte.TryParse, out value);
+            if (typeof(T) == typeof(byte)) return TryGetBasicValue<T, byte>(strValue, byte.TryParse, out value);
+            if (typeof(T) == typeof(short)) return TryGetBasicValue<T, short>(strValue, short.TryParse, out value);
+            if (typeof(T) == typeof(ushort)) return TryGetBasicValue<T, ushort>(strValue, ushort.TryParse, out value);
+            if (typeof(T) == typeof(int)) return TryGetBasicValue<T, int>(strValue, int.TryParse, out value);
+            if (typeof(T) == typeof(uint)) return TryGetBasicValue<T, uint>(strValue, uint.TryParse, out value);
+            if (typeof(T) == typeof(long)) return TryGetBasicValue<T, long>(strValue, long.TryParse, out value);
+            if (typeof(T) == typeof(ulong)) return TryGetBasicValue<T, ulong>(strValue, ulong.TryParse, out value);
+            if (typeof(T) == typeof(float)) return TryGetBasicValue<T, float>(strValue, float.TryParse, out value);
+            if (typeof(T) == typeof(double)) return TryGetBasicValue<T, double>(strValue, double.TryParse, out value);
+            if (typeof(T) == typeof(decimal)) return TryGetBasicValue<T, decimal>(strValue, decimal.TryParse, out value);
 
             try
             {
-                value = (T)Convert.ChangeType(currValue, typeof(T));
+                value = (T)Convert.ChangeType(currentValue, typeof(T));
                 return true;
             }
             catch
             {
-                value = default(T);
+                value = default;
                 return false;
             }
         }
 
-        private static bool TryGetTimeSpanValue<T>(out T value, object currValue, out bool b)
+        private static bool TryGetDateTimeValue<T>(out T value, object currentValue)
         {
-            if (typeof(T) == typeof(TimeSpan))
+            if (typeof(T) != typeof(DateTime))
             {
-                TimeSpan tmp;
-                Boolean retVal = true;
-
-                if (currValue is TimeSpan)
-                {
-                    tmp = (TimeSpan)currValue;
-                }
-                else if (!TimeSpan.TryParse(currValue.ToString(), out tmp))
-                {
-                    retVal = false;
-                }
-
-                value = (T)Convert.ChangeType(tmp, typeof(T));
-                {
-                    b = retVal;
-                    return true;
-                }
+                value = default;
+                return false;
             }
-            value = default(T);
-            b = false;
-            return false;
+
+            if (!DateTime.TryParse(currentValue.ToString(), out DateTime ts))
+            {
+                value = default;
+                return false;
+            }
+
+            value = (T)Convert.ChangeType(ts, typeof(T));
+            return true;
+        }
+
+        private static bool TryGetTimeSpanValue<T>(out T value, object currentValue)
+        {
+            if (typeof(T) != typeof(TimeSpan))
+            {
+                value = default;
+                return false;
+            }
+
+            if (!TimeSpan.TryParse(currentValue.ToString(), out TimeSpan ts))
+            {
+                value = default;
+                return false;
+            }
+
+            value = (T)Convert.ChangeType(ts, typeof(T));
+            return true;
         }
 
         private bool TryGetRichStringValue<T>(out T value)
@@ -1666,71 +1705,94 @@ namespace ClosedXML.Excel
                 value = (T)RichText;
                 return true;
             }
-            value = default(T);
+            value = default;
             return false;
         }
 
-        private static bool TryGetStringValue<T>(out T value, object currValue)
+        private static bool TryGetStringValue<T>(out T value, object currentValue)
         {
             if (typeof(T) == typeof(String))
             {
-                var valToUse = currValue.ToString();
-                if (!utfPattern.Match(valToUse).Success)
+                var s = currentValue.ToString();
+                var matches = utfPattern.Matches(s);
+
+                if (matches.Count == 0)
                 {
-                    value = (T)Convert.ChangeType(valToUse, typeof(T));
+                    value = (T)Convert.ChangeType(s, typeof(T));
                     return true;
                 }
 
                 var sb = new StringBuilder();
                 var lastIndex = 0;
-                foreach (Match match in utfPattern.Matches(valToUse))
+
+                foreach (var match in matches.Cast<Match>())
                 {
                     var matchString = match.Value;
                     var matchIndex = match.Index;
-                    sb.Append(valToUse.Substring(lastIndex, matchIndex - lastIndex));
+                    sb.Append(s.Substring(lastIndex, matchIndex - lastIndex));
 
                     sb.Append((char)int.Parse(match.Groups[1].Value, NumberStyles.AllowHexSpecifier));
 
                     lastIndex = matchIndex + matchString.Length;
                 }
-                if (lastIndex < valToUse.Length)
-                    sb.Append(valToUse.Substring(lastIndex));
+
+                if (lastIndex < s.Length)
+                    sb.Append(s.Substring(lastIndex));
 
                 value = (T)Convert.ChangeType(sb.ToString(), typeof(T));
                 return true;
             }
-            value = default(T);
+            value = default;
             return false;
         }
 
-        private static Boolean TryGetBooleanValue<T>(out T value, object currValue)
+        private static Boolean TryGetBooleanValue<T>(out T value, object currentValue)
         {
-            if (typeof(T) == typeof(Boolean))
+            if (typeof(T) != typeof(Boolean))
             {
-                if (Boolean.TryParse(currValue.ToString(), out Boolean tmp))
+                value = default;
+                return false;
+            }
+
+            if (!Boolean.TryParse(currentValue.ToString(), out Boolean b))
+            {
+                value = default;
+                return false;
+            }
+
+            value = (T)Convert.ChangeType(b, typeof(T));
+            return true;
+        }
+
+        private Boolean TryGetHyperlink<T>(out T value)
+        {
+            if (typeof(T) == typeof(XLHyperlink))
+            {
+                var hyperlink = GetHyperlink();
+                if (hyperlink != null)
                 {
-                    value = (T)Convert.ChangeType(tmp, typeof(T));
-                    {
-                        return true;
-                    }
+                    value = (T)Convert.ChangeType(hyperlink, typeof(T));
+                    return true;
                 }
             }
-            value = default(T);
+
+            value = default;
             return false;
         }
 
-        private delegate Boolean Func<T>(String input, out T output);
+        private delegate Boolean ParseFunction<T>(String s, NumberStyles style, IFormatProvider provider, out T result);
 
-        private static Boolean TryGetBasicValue<T, U>(out T value, String currValue, Func<U> func)
+        private static Boolean TryGetBasicValue<T, U>(String currentValue, ParseFunction<U> parseFunction, out T value)
         {
-            if (func(currValue, out U tmp))
+            if (parseFunction.Invoke(currentValue, NumberStyles.Any, null, out U result))
             {
-                value = (T)Convert.ChangeType(tmp, typeof(T));
+                value = (T)Convert.ChangeType(result, typeof(T));
                 {
                     return true;
                 }
             }
-            value = default(T);
+
+            value = default;
             return false;
         }
 
@@ -1929,13 +1991,8 @@ namespace ClosedXML.Excel
 
         private Boolean SetRange(Object rangeObject)
         {
-            var asRange = rangeObject as XLRangeBase;
-            if (asRange == null)
-            {
-                var tmp = rangeObject as XLCell;
-                if (tmp != null)
-                    asRange = tmp.AsRange();
-            }
+            var asRange = (rangeObject as XLRangeBase)
+                       ?? (rangeObject as XLCell)?.AsRange();
 
             if (asRange != null)
             {
@@ -1943,12 +2000,16 @@ namespace ClosedXML.Excel
                 {
                     var maxRows = asRange.RowCount();
                     var maxColumns = asRange.ColumnCount();
-                    Worksheet.Range(_rowNumber, _columnNumber, maxRows, maxColumns).Clear();
+
+                    var lastRow = Math.Min(_rowNumber + maxRows - 1, XLHelper.MaxRowNumber);
+                    var lastColumn = Math.Min(_columnNumber + maxColumns - 1, XLHelper.MaxColumnNumber);
+
+                    Worksheet.Range(_rowNumber, _columnNumber, lastRow, lastColumn).Clear();
                 }
 
                 var minRow = asRange.RangeAddress.FirstAddress.RowNumber;
                 var minColumn = asRange.RangeAddress.FirstAddress.ColumnNumber;
-                foreach (var sourceCell in asRange.CellsUsed(true))
+                foreach (var sourceCell in asRange.CellsUsed(XLCellsUsedOptions.All))
                 {
                     Worksheet.Cell(
                         _rowNumber + sourceCell.Address.RowNumber - minRow,
@@ -1956,20 +2017,22 @@ namespace ClosedXML.Excel
                         ).CopyFromInternal(sourceCell as XLCell, true);
                 }
 
-                var rangesToMerge = (from mergedRange in (asRange.Worksheet).Internals.MergedRanges
-                                     where asRange.Contains(mergedRange)
-                                     let initialRo =
-                                         _rowNumber +
-                                         (mergedRange.RangeAddress.FirstAddress.RowNumber -
-                                          asRange.RangeAddress.FirstAddress.RowNumber)
-                                     let initialCo =
-                                         _columnNumber +
-                                         (mergedRange.RangeAddress.FirstAddress.ColumnNumber -
-                                          asRange.RangeAddress.FirstAddress.ColumnNumber)
-                                     select
-                                         Worksheet.Range(initialRo, initialCo, initialRo + mergedRange.RowCount() - 1,
-                                                         initialCo + mergedRange.ColumnCount() - 1)).Cast<IXLRange>().
-                    ToList();
+                var rangesToMerge = asRange.Worksheet.Internals.MergedRanges
+                    .Where(mr => asRange.Contains(mr))
+                    .Select(mr =>
+                    {
+                        var firstRow = _rowNumber + (mr.RangeAddress.FirstAddress.RowNumber - asRange.RangeAddress.FirstAddress.RowNumber);
+                        var firstColumn = _columnNumber + (mr.RangeAddress.FirstAddress.ColumnNumber - asRange.RangeAddress.FirstAddress.ColumnNumber);
+                        return (IXLRange)Worksheet.Range
+                        (
+                            firstRow,
+                            firstColumn,
+                            firstRow + mr.RowCount() - 1,
+                            firstColumn + mr.ColumnCount() - 1
+                        );
+                    })
+                    .ToList();
+
                 rangesToMerge.ForEach(r => r.Merge(false));
 
                 CopyConditionalFormatsFrom(asRange);
@@ -2095,7 +2158,8 @@ namespace ClosedXML.Excel
             }
             else
             {
-                var tuple = SetKnownTypedValue(value, style);
+                // Don't accept strings, because we're going to try to parse them later
+                var tuple = SetKnownTypedValue(value, style, acceptString: false);
                 parsedValue = tuple.Item1;
                 parsed = tuple.Item2;
             }
@@ -2104,7 +2168,7 @@ namespace ClosedXML.Excel
             if (!parsed)
             {
                 // We'll have to parse it slowly :-(
-                parsedValue = DeduceCellValueByParsing(parsedValue.ToString(), style);
+                parsedValue = DeduceCellValueByParsing(value.ToString(), style);
             }
 
             if (SetTableHeaderValue(parsedValue)) return;
@@ -2871,7 +2935,7 @@ namespace ClosedXML.Excel
             var rangeAddress = range.RangeAddress;
 
             var filledCells = range
-                .SurroundingCells(c => !(c as XLCell).IsEmpty(false, false))
+                .SurroundingCells(c => !(c as XLCell).IsEmpty(XLCellsUsedOptions.AllContents))
                 .Concat(this.Worksheet.Range(rangeAddress).Cells());
 
             var grownRangeAddress = new XLRangeAddress(

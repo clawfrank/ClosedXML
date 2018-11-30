@@ -13,6 +13,15 @@ namespace ClosedXML.Excel
         DataValidation          = 1 << 5,
 
         AllFormats = NormalFormats | ConditionalFormats,
+        AllContents = Contents | DataType | Comments,
         All = Contents | DataType | NormalFormats | ConditionalFormats | Comments | DataValidation
+    }
+
+    internal static class XLClearOptionsExtensions
+    {
+        public static XLCellsUsedOptions ToCellsUsedOptions(this XLClearOptions options)
+        {
+            return (XLCellsUsedOptions)options;
+        }
     }
 }

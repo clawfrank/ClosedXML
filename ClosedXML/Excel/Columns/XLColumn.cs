@@ -8,6 +8,7 @@ namespace ClosedXML.Excel
     internal class XLColumn : XLRangeBase, IXLColumn
     {
         #region Private fields
+
         private int _outlineLevel;
 
         #endregion Private fields
@@ -56,7 +57,6 @@ namespace ClosedXML.Excel
         }
 
         public Boolean Collapsed { get; set; }
-        
 
         #region IXLColumn Members
 
@@ -82,7 +82,7 @@ namespace ClosedXML.Excel
 
         public new IXLCells Cells(String cellsInColumn)
         {
-            var retVal = new XLCells(false, false);
+            var retVal = new XLCells(false, XLCellsUsedOptions.All);
             var rangePairs = cellsInColumn.Split(',');
             foreach (string pair in rangePairs)
                 retVal.Add(Range(pair.Trim()).RangeAddress);
@@ -91,13 +91,13 @@ namespace ClosedXML.Excel
 
         public new IXLCells Cells()
         {
-            return Cells(true, true);
+            return Cells(true, XLCellsUsedOptions.All);
         }
 
         public new IXLCells Cells(Boolean usedCellsOnly)
         {
             if (usedCellsOnly)
-                return Cells(true, true);
+                return Cells(true, XLCellsUsedOptions.All);
             else
                 return Cells(FirstCellUsed().Address.RowNumber, LastCellUsed().Address.RowNumber);
         }
@@ -469,6 +469,7 @@ namespace ClosedXML.Excel
             var newColumn = (XLColumn)column;
             newColumn.Width = Width;
             newColumn.InnerStyle = InnerStyle;
+            newColumn.IsHidden = IsHidden;
 
             AsRange().CopyTo(column);
 
@@ -509,13 +510,22 @@ namespace ClosedXML.Excel
             return this;
         }
 
-        public IXLRangeColumn ColumnUsed(Boolean includeFormats = false)
+        [Obsolete("Use the overload with XLCellsUsedOptions")]
+        public IXLRangeColumn ColumnUsed(Boolean includeFormats)
         {
-            return Column(FirstCellUsed(includeFormats), LastCellUsed(includeFormats));
+            return ColumnUsed(includeFormats
+                ? XLCellsUsedOptions.All
+                : XLCellsUsedOptions.AllContents);
+        }
+
+        public IXLRangeColumn ColumnUsed(XLCellsUsedOptions options = XLCellsUsedOptions.AllContents)
+        {
+            return Column((this as IXLRangeBase).FirstCellUsed(options),
+                          (this as IXLRangeBase).LastCellUsed(options));
         }
 
         #endregion IXLColumn Members
-        
+
         public override XLRange AsRange()
         {
             return Range(1, 1, XLHelper.MaxRowNumber, 1);
@@ -631,15 +641,16 @@ namespace ClosedXML.Excel
 
         public override Boolean IsEmpty()
         {
-            return IsEmpty(false);
+            return IsEmpty(XLCellsUsedOptions.AllContents);
         }
 
-        public override Boolean IsEmpty(Boolean includeFormats)
+        public override Boolean IsEmpty(XLCellsUsedOptions options)
         {
-            if (includeFormats && !StyleValue.Equals(Worksheet.StyleValue))
+            if (options.HasFlag(XLCellsUsedOptions.NormalFormats) &&
+                !StyleValue.Equals(Worksheet.StyleValue))
                 return false;
 
-            return base.IsEmpty(includeFormats);
+            return base.IsEmpty(options);
         }
 
         public override Boolean IsEntireRow()

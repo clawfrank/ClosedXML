@@ -819,7 +819,7 @@ namespace ClosedXML.Excel
             if (pf.Outline != null) pivotField.Outline = pf.Outline.Value;
             if (pf.Compact != null) pivotField.Compact = pf.Compact.Value;
             if (pf.InsertBlankRow != null) pivotField.InsertBlankLines = pf.InsertBlankRow.Value;
-            if (pf.ShowAll != null) pivotField.ShowBlankItems = pf.ShowAll.Value;
+            pivotField.ShowBlankItems = OpenXmlHelper.GetBooleanValueAsBool(pf.ShowAll, true);
             if (pf.InsertPageBreak != null) pivotField.InsertPageBreaks = pf.InsertPageBreak.Value;
             if (pf.SubtotalTop != null) pivotField.SubtotalsAtTop = pf.SubtotalTop.Value;
             if (pf.AllDrilled != null) pivotField.Collapsed = !pf.AllDrilled.Value;
@@ -1269,6 +1269,10 @@ namespace ClosedXML.Excel
                 var name = definedName.Name;
                 var visible = true;
                 if (definedName.Hidden != null) visible = !BooleanValue.ToBoolean(definedName.Hidden);
+
+                var localSheetId = -1;
+                if (definedName.LocalSheetId?.HasValue ?? false) localSheetId = Convert.ToInt32(definedName.LocalSheetId.Value);
+
                 if (name == "_xlnm.Print_Area")
                 {
                     var fixedNames = validateDefinedNames(definedName.Text.Split(','));
@@ -1276,7 +1280,7 @@ namespace ClosedXML.Excel
                     {
                         if (area.Contains("["))
                         {
-                            var ws = Worksheets.FirstOrDefault(w => (w as XLWorksheet).SheetId == definedName.LocalSheetId + 1);
+                            var ws = Worksheets.FirstOrDefault(w => (w as XLWorksheet).SheetId == (localSheetId + 1));
                             if (ws != null)
                             {
                                 ws.PageSetup.PrintAreas.Add(area);
@@ -1298,17 +1302,16 @@ namespace ClosedXML.Excel
                 {
                     string text = definedName.Text;
 
-                    var localSheetId = definedName.LocalSheetId;
                     var comment = definedName.Comment;
-                    if (localSheetId == null)
+                    if (localSheetId == -1)
                     {
                         if (NamedRanges.All(nr => nr.Name != name))
-                            (NamedRanges as XLNamedRanges).Add(name, text, comment, true).Visible = visible;
+                            (NamedRanges as XLNamedRanges).Add(name, text, comment, validateName: false, validateRangeAddress: false).Visible = visible;
                     }
                     else
                     {
-                        if (Worksheet(Int32.Parse(localSheetId) + 1).NamedRanges.All(nr => nr.Name != name))
-                            (Worksheet(Int32.Parse(localSheetId) + 1).NamedRanges as XLNamedRanges).Add(name, text, comment, true).Visible = visible;
+                        if (Worksheet(localSheetId + 1).NamedRanges.All(nr => nr.Name != name))
+                            (Worksheet(localSheetId + 1).NamedRanges as XLNamedRanges).Add(name, text, comment, validateName: false, validateRangeAddress: false).Visible = visible;
                     }
                 }
             }
@@ -1706,7 +1709,7 @@ namespace ClosedXML.Excel
                 if (source.Style != null)
                     setBorder(source.Style.Value.ToClosedXml());
                 if (source.Color != null)
-                    setColor(GetColor(source.Color));
+                    setColor(source.Color.ToClosedXMLColor(_colorList));
             }
         }
 
@@ -1731,22 +1734,28 @@ namespace ClosedXML.Excel
                     if (differentialFillFormat)
                     {
                         if (openXMLFill.PatternFill.BackgroundColor != null)
-                            closedXMLFill.BackgroundColor = GetColor(openXMLFill.PatternFill.BackgroundColor);
+                            closedXMLFill.BackgroundColor = openXMLFill.PatternFill.BackgroundColor.ToClosedXMLColor(_colorList);
+                        else
+                            closedXMLFill.BackgroundColor = XLColor.FromIndex(64);
                     }
                     else
                     {
                         // yes, source is foreground!
                         if (openXMLFill.PatternFill.ForegroundColor != null)
-                            closedXMLFill.BackgroundColor = GetColor(openXMLFill.PatternFill.ForegroundColor);
+                            closedXMLFill.BackgroundColor = openXMLFill.PatternFill.ForegroundColor.ToClosedXMLColor(_colorList);
+                        else
+                            closedXMLFill.BackgroundColor = XLColor.FromIndex(64);
                     }
                     break;
 
                 default:
                     if (openXMLFill.PatternFill.ForegroundColor != null)
-                        closedXMLFill.PatternColor = GetColor(openXMLFill.PatternFill.ForegroundColor);
+                        closedXMLFill.PatternColor = openXMLFill.PatternFill.ForegroundColor.ToClosedXMLColor(_colorList);
 
                     if (openXMLFill.PatternFill.BackgroundColor != null)
-                        closedXMLFill.BackgroundColor = GetColor(openXMLFill.PatternFill.BackgroundColor);
+                        closedXMLFill.BackgroundColor = openXMLFill.PatternFill.BackgroundColor.ToClosedXMLColor(_colorList);
+                    else
+                        closedXMLFill.BackgroundColor = XLColor.FromIndex(64);
                     break;
             }
         }
@@ -1756,9 +1765,9 @@ namespace ClosedXML.Excel
             if (fontSource == null) return;
 
             fontBase.Bold = GetBoolean(fontSource.Elements<Bold>().FirstOrDefault());
-            var fontColor = GetColor(fontSource.Elements<DocumentFormat.OpenXml.Spreadsheet.Color>().FirstOrDefault());
-            if (fontColor.HasValue)
-                fontBase.FontColor = fontColor;
+            var fontColor = fontSource.Elements<DocumentFormat.OpenXml.Spreadsheet.Color>().FirstOrDefault();
+            if (fontColor != null)
+                fontBase.FontColor = fontColor.ToClosedXMLColor(_colorList);
 
             var fontFamilyNumbering =
                 fontSource.Elements<DocumentFormat.OpenXml.Spreadsheet.FontFamily>().FirstOrDefault();
@@ -1973,9 +1982,31 @@ namespace ClosedXML.Excel
 
                     foreach (var filter in filterColumn.CustomFilters.OfType<CustomFilter>())
                     {
-                        var xlFilter = new XLFilter { Value = filter.Val.Value, Connector = connector };
+                        var xlFilter = new XLFilter { Connector = connector };
                         if (isText)
-                            xlFilter.Value = filter.Val.Value;
+                        {
+                            // TODO: Treat text BETWEEN functions better
+                            if (filter.Val.Value.StartsWith("*") && filter.Val.Value.EndsWith("*"))
+                            {
+                                var value = filter.Val.Value.Substring(1, filter.Val.Value.Length - 2);
+                                xlFilter.Value = filter.Val.Value;
+                                xlFilter.Condition = s => XLFilterColumn.ContainsFunction(value, s);
+                            }
+                            else if (filter.Val.Value.StartsWith("*"))
+                            {
+                                var value = filter.Val.Value.Substring(1);
+                                xlFilter.Value = filter.Val.Value;
+                                xlFilter.Condition = s => XLFilterColumn.EndsWithFunction(value, s);
+                            }
+                            else if (filter.Val.Value.EndsWith("*"))
+                            {
+                                var value = filter.Val.Value.Substring(0, filter.Val.Value.Length - 1);
+                                xlFilter.Value = filter.Val.Value;
+                                xlFilter.Condition = s => XLFilterColumn.BeginsWithFunction(value, s);
+                            }
+                            else
+                                xlFilter.Value = filter.Val.Value;
+                        }
                         else
                             xlFilter.Value = Double.Parse(filter.Val.Value, CultureInfo.InvariantCulture);
 
@@ -1984,29 +2015,34 @@ namespace ClosedXML.Excel
                         else
                             xlFilter.Operator = XLFilterOperator.Equal;
 
-                        Func<Object, Boolean> condition = null;
-                        switch (xlFilter.Operator)
+                        // Unhandled instances - we should actually improve this
+                        if (xlFilter.Condition == null)
                         {
-                            case XLFilterOperator.Equal:
-                                if (isText)
-                                    condition = o => o.ToString().Equals(xlFilter.Value.ToString(), StringComparison.OrdinalIgnoreCase);
-                                else
-                                    condition = o => (o as IComparable).CompareTo(xlFilter.Value) == 0;
-                                break;
+                            Func<Object, Boolean> condition = null;
+                            switch (xlFilter.Operator)
+                            {
+                                case XLFilterOperator.Equal:
+                                    if (isText)
+                                        condition = o => o.ToString().Equals(xlFilter.Value.ToString(), StringComparison.OrdinalIgnoreCase);
+                                    else
+                                        condition = o => (o as IComparable).CompareTo(xlFilter.Value) == 0;
+                                    break;
 
-                            case XLFilterOperator.EqualOrGreaterThan: condition = o => (o as IComparable).CompareTo(xlFilter.Value) >= 0; break;
-                            case XLFilterOperator.EqualOrLessThan: condition = o => (o as IComparable).CompareTo(xlFilter.Value) <= 0; break;
-                            case XLFilterOperator.GreaterThan: condition = o => (o as IComparable).CompareTo(xlFilter.Value) > 0; break;
-                            case XLFilterOperator.LessThan: condition = o => (o as IComparable).CompareTo(xlFilter.Value) < 0; break;
-                            case XLFilterOperator.NotEqual:
-                                if (isText)
-                                    condition = o => !o.ToString().Equals(xlFilter.Value.ToString(), StringComparison.OrdinalIgnoreCase);
-                                else
-                                    condition = o => (o as IComparable).CompareTo(xlFilter.Value) != 0;
-                                break;
+                                case XLFilterOperator.EqualOrGreaterThan: condition = o => (o as IComparable).CompareTo(xlFilter.Value) >= 0; break;
+                                case XLFilterOperator.EqualOrLessThan: condition = o => (o as IComparable).CompareTo(xlFilter.Value) <= 0; break;
+                                case XLFilterOperator.GreaterThan: condition = o => (o as IComparable).CompareTo(xlFilter.Value) > 0; break;
+                                case XLFilterOperator.LessThan: condition = o => (o as IComparable).CompareTo(xlFilter.Value) < 0; break;
+                                case XLFilterOperator.NotEqual:
+                                    if (isText)
+                                        condition = o => !o.ToString().Equals(xlFilter.Value.ToString(), StringComparison.OrdinalIgnoreCase);
+                                    else
+                                        condition = o => (o as IComparable).CompareTo(xlFilter.Value) != 0;
+                                    break;
+                            }
+
+                            xlFilter.Condition = condition;
                         }
 
-                        xlFilter.Condition = condition;
                         filterList.Add(xlFilter);
                     }
                 }
@@ -2027,7 +2063,7 @@ namespace ClosedXML.Excel
                     foreach (var filter in filterColumn.Filters.OfType<Filter>())
                     {
                         String val = filter.Val.Value;
-                        if (!Double.TryParse(val, out Double dTest))
+                        if (!Double.TryParse(val, NumberStyles.Any, null, out Double dTest))
                         {
                             isText = true;
                             break;
@@ -2046,7 +2082,7 @@ namespace ClosedXML.Excel
                         }
                         else
                         {
-                            xlFilter.Value = Double.Parse(filter.Val.Value, CultureInfo.InvariantCulture);
+                            xlFilter.Value = Double.Parse(filter.Val.Value, NumberStyles.Any);
                             condition = o => (o as IComparable).CompareTo(xlFilter.Value) == 0;
                         }
 
@@ -2365,8 +2401,7 @@ namespace ClosedXML.Excel
                 if (xlConditionalFormat != null)
                 {
                     var negativeFillColor = conditionalFormattingRule.Descendants<DocumentFormat.OpenXml.Office2010.Excel.NegativeFillColor>().SingleOrDefault();
-                    var color = new DocumentFormat.OpenXml.Spreadsheet.Color { Rgb = negativeFillColor.Rgb };
-                    xlConditionalFormat.Colors.Add(this.GetColor(color));
+                    xlConditionalFormat.Colors.Add(negativeFillColor.ToClosedXMLColor(_colorList));
                 }
             }
         }
@@ -2397,7 +2432,7 @@ namespace ClosedXML.Excel
             }
             foreach (var c in element.Elements<DocumentFormat.OpenXml.Spreadsheet.Color>())
             {
-                conditionalFormat.Colors.Add(GetColor(c));
+                conditionalFormat.Colors.Add(c.ToClosedXMLColor(_colorList));
             }
         }
 
@@ -2454,7 +2489,7 @@ namespace ClosedXML.Excel
             if (sheetProperty == null) return;
 
             if (sheetProperty.TabColor != null)
-                ws.TabColor = GetColor(sheetProperty.TabColor);
+                ws.TabColor = sheetProperty.TabColor.ToClosedXMLColor(_colorList);
 
             if (sheetProperty.OutlineProperties != null)
             {
@@ -2653,34 +2688,6 @@ namespace ClosedXML.Excel
             Properties.Title = p.Title;
         }
 
-        private XLColor GetColor(ColorType color)
-        {
-            XLColor retVal = null;
-            if (color != null)
-            {
-                if (color.Rgb != null)
-                {
-                    String htmlColor = "#" + color.Rgb.Value;
-                    Color thisColor;
-                    if (!_colorList.ContainsKey(htmlColor))
-                    {
-                        thisColor = ColorStringParser.ParseFromHtml(htmlColor);
-                        _colorList.Add(htmlColor, thisColor);
-                    }
-                    else
-                        thisColor = _colorList[htmlColor];
-                    retVal = XLColor.FromColor(thisColor);
-                }
-                else if (color.Indexed != null && color.Indexed <= 64)
-                    retVal = XLColor.FromIndex((Int32)color.Indexed.Value);
-                else if (color.Theme != null)
-                {
-                    retVal = color.Tint != null ? XLColor.FromTheme((XLThemeColor)color.Theme.Value, color.Tint.Value) : XLColor.FromTheme((XLThemeColor)color.Theme.Value);
-                }
-            }
-            return retVal ?? XLColor.NoColor;
-        }
-
         private void ApplyStyle(IXLStylized xlStylized, Int32 styleIndex, Stylesheet s, Fills fills, Borders borders,
                                 Fonts fonts, NumberingFormats numberingFormats)
         {
@@ -2689,6 +2696,8 @@ namespace ClosedXML.Excel
             var cellFormat = (CellFormat)s.CellFormats.ElementAt(styleIndex);
 
             var xlStyle = XLStyle.Default.Key;
+
+            xlStyle.IncludeQuotePrefix = OpenXmlHelper.GetBooleanValueAsBool(cellFormat.QuotePrefix, false);
 
             if (cellFormat.ApplyProtection != null)
             {
@@ -2760,45 +2769,40 @@ namespace ClosedXML.Excel
                         if (bottomBorder.Style != null)
                             xlBorder.BottomBorder = bottomBorder.Style.Value.ToClosedXml();
 
-                        var bottomBorderColor = GetColor(bottomBorder.Color);
-                        if (bottomBorderColor.HasValue)
-                            xlBorder.BottomBorderColor = bottomBorderColor.Key;
+                        if (bottomBorder.Color != null)
+                            xlBorder.BottomBorderColor = bottomBorder.Color.ToClosedXMLColor(_colorList).Key;
                     }
                     var topBorder = border.TopBorder;
                     if (topBorder != null)
                     {
                         if (topBorder.Style != null)
                             xlBorder.TopBorder = topBorder.Style.Value.ToClosedXml();
-                        var topBorderColor = GetColor(topBorder.Color);
-                        if (topBorderColor.HasValue)
-                            xlBorder.TopBorderColor = topBorderColor.Key;
+                        if (topBorder.Color != null)
+                            xlBorder.TopBorderColor = topBorder.Color.ToClosedXMLColor(_colorList).Key;
                     }
                     var leftBorder = border.LeftBorder;
                     if (leftBorder != null)
                     {
                         if (leftBorder.Style != null)
                             xlBorder.LeftBorder = leftBorder.Style.Value.ToClosedXml();
-                        var leftBorderColor = GetColor(leftBorder.Color);
-                        if (leftBorderColor.HasValue)
-                            xlBorder.LeftBorderColor = leftBorderColor.Key;
+                        if (leftBorder.Color != null)
+                            xlBorder.LeftBorderColor = leftBorder.Color.ToClosedXMLColor(_colorList).Key;
                     }
                     var rightBorder = border.RightBorder;
                     if (rightBorder != null)
                     {
                         if (rightBorder.Style != null)
                             xlBorder.RightBorder = rightBorder.Style.Value.ToClosedXml();
-                        var rightBorderColor = GetColor(rightBorder.Color);
-                        if (rightBorderColor.HasValue)
-                            xlBorder.RightBorderColor = rightBorderColor.Key;
+                        if (rightBorder.Color != null)
+                            xlBorder.RightBorderColor = rightBorder.Color.ToClosedXMLColor(_colorList).Key;
                     }
                     var diagonalBorder = border.DiagonalBorder;
                     if (diagonalBorder != null)
                     {
                         if (diagonalBorder.Style != null)
                             xlBorder.DiagonalBorder = diagonalBorder.Style.Value.ToClosedXml();
-                        var diagonalBorderColor = GetColor(diagonalBorder.Color);
-                        if (diagonalBorderColor.HasValue)
-                            xlBorder.DiagonalBorderColor = diagonalBorderColor.Key;
+                        if (diagonalBorder.Color != null)
+                            xlBorder.DiagonalBorderColor = diagonalBorder.Color.ToClosedXMLColor(_colorList).Key;
                         if (border.DiagonalDown != null)
                             xlBorder.DiagonalDown = border.DiagonalDown;
                         if (border.DiagonalUp != null)
@@ -2819,9 +2823,8 @@ namespace ClosedXML.Excel
                 {
                     xlFont.Bold = GetBoolean(font.Bold);
 
-                    var fontColor = GetColor(font.Color);
-                    if (fontColor.HasValue)
-                        xlFont.FontColor = fontColor.Key;
+                    if (font.Color != null)
+                        xlFont.FontColor = font.Color.ToClosedXMLColor(_colorList).Key;
 
                     if (font.FontFamilyNumbering != null && (font.FontFamilyNumbering).Val != null)
                     {

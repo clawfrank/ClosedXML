@@ -13,7 +13,7 @@ namespace ClosedXML.Excel
         /// Normally, XLRanges collection includes ranges from a single worksheet, but not necessarily.
         /// </summary>
         private readonly Dictionary<IXLWorksheet, IXLRangeIndex<XLRange>> _indexes;
-        private IEnumerable<XLRange> Ranges => _indexes.Values.SelectMany(index => index.GetAll()).ToList();
+        private IEnumerable<XLRange> Ranges => _indexes.Values.SelectMany(index => index.GetAll());
 
 
         private IXLRangeIndex<XLRange> GetRangeIndex(IXLWorksheet worksheet)
@@ -78,9 +78,7 @@ namespace ClosedXML.Excel
 
         public IEnumerator<IXLRange> GetEnumerator()
         {
-            var retList = new List<IXLRange>();
-            retList.AddRange(Ranges.Where(r => XLHelper.IsValidRangeAddress(r.RangeAddress)).Cast<IXLRange>());
-            return retList.GetEnumerator();
+            return Ranges.Cast<IXLRange>().GetEnumerator();
         }
 
         IEnumerator IEnumerable.GetEnumerator()
@@ -170,7 +168,7 @@ namespace ClosedXML.Excel
 
         public IXLCells Cells()
         {
-            var cells = new XLCells(false, false);
+            var cells = new XLCells(false, XLCellsUsedOptions.AllContents);
             foreach (XLRange container in Ranges)
                 cells.Add(container.RangeAddress);
             return cells;
@@ -178,15 +176,24 @@ namespace ClosedXML.Excel
 
         public IXLCells CellsUsed()
         {
-            var cells = new XLCells(true, false);
+            var cells = new XLCells(true, XLCellsUsedOptions.AllContents);
             foreach (XLRange container in Ranges)
                 cells.Add(container.RangeAddress);
             return cells;
         }
 
+        [Obsolete("Use the overload with XLCellsUsedOptions")]
+
         public IXLCells CellsUsed(Boolean includeFormats)
         {
-            var cells = new XLCells(true, includeFormats);
+            return CellsUsed(includeFormats
+                ? XLCellsUsedOptions.All
+                : XLCellsUsedOptions.AllContents);
+        }
+
+        public IXLCells CellsUsed(XLCellsUsedOptions options)
+        {
+            var cells = new XLCells(true, options);
             foreach (XLRange container in Ranges)
                 cells.Add(container.RangeAddress);
             return cells;
